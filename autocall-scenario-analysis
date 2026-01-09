@@ -1,0 +1,159 @@
+# structured_scenarios_tool.py
+
+import math
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+def simulate_gbm_paths(S0,r,sigma,T,n_steps,n_paths,seed=42):
+    rng=np.random.default_rng(seed); dt=T/n_steps
+    Z=rng.standard_normal((n_paths,n_steps))
+    drift=(r-0.5*sigma*sigma)*dt; vol=sigma*math.sqrt(dt)
+
+    logS=np.empty((n_paths,n_steps+1)); logS[:,0]=math.log(S0)
+    for k in range(n_steps):
+        logS[:,k+1]=logS[:,k]+drift+vol*Z[:,k]
+    return np.exp(logS)
+
+
+def phoenix_cashflows(paths,spot,Sref,r,T,obs_per_year,coupon_rate,coupon_barrier,
+                      autocall_barrier,protection_barrier,notional=100.0):
+    n_paths=paths.shape[0]; n_obs=int(obs_per_year*T)
+    disc=lambda t:math.exp(-r*t)
+
+    call_lvl=autocall_barrier*Sref; cpn_lvl=coupon_barrier*Sref; prot_lvl=protection_barrier*Sref
+
+    pv=np.zeros(n_paths); payoff=np.zeros(n_paths)
+    called_at=np.full(n_paths,-1,dtype=int); n_coupons=np.zeros(n_paths,dtype=int)
+
+    for p in range(n_paths):
+        v=0.0; called=False
+        for k in range(1,n_obs+1):
+            t=(k/n_obs)*T; S=paths[p,k]
+
+            if S>=cpn_lvl:
+                v+=notional*coupon_rate*disc(t); n_coupons[p]+=1
+
+            if S>=call_lvl:
+                v+=notional*disc(t); called_at[p]=k
+                payoff[p]=notional+notional*coupon_rate*n_coupons[p]
+                called=True; break
+
+        if not called:
+            ST=paths[p,-1]
+            redemption=notional if ST>=prot_lvl else notional*(ST/Sref)
+            v+=redemption*disc(T)
+            payoff[p]=redemption+notional*coupon_rate*n_coupons[p]
+
+        pv[p]=v
+
+    return pv,payoff,called_at,n_coupons
+
+
+def run_pricing(params):
+    spot=params["spot"]; Sref=params["Sref"]; r=params["r"]; sigma=params["sigma"]
+    T=params["T"]; obs_per_year=params["obs_per_year"]
+    n_paths=params["n_paths"]; seed=params.get("seed",7)
+
+    n_obs=int(obs_per_year*T)
+    paths=simulate_gbm_paths(spot,r,sigma,T,n_obs,n_paths,seed=seed)
+
+    pv,payoff,called_at,n_coupons=phoenix_cashflows(
+        paths,spot,Sref,r,T,obs_per_year,
+        params["coupon_rate"],params["coupon_barrier"],
+        params["autocall_barrier"],params["protection_barrier"],
+        params.get("notional",100.0)
+    )
+
+    price=float(pv.mean()); stderr=float(pv.std(ddof=1)/math.sqrt(n_paths))
+    prob_called=float((called_at!=-1).mean()); avg_call_time=None
+    if prob_called>0: avg_call_time=float(((called_at[called_at!=-1]/n_obs)*T).mean())
+
+    notional=params.get("notional",100.0)
+    client_return=(payoff/notional)-1.0
+
+    return dict(price=price,stderr=stderr,prob_called=prob_called,avg_call_time=avg_call_time,
+                pv=pv,payoff=payoff,client_return=client_return,
+                called_at=called_at,n_coupons=n_coupons,
+                paths_sample=paths[:800,:],n_obs=n_obs)
+
+
+def client_metrics(res):
+    cr=res["client_return"]; payoff=res["payoff"]
+    q=np.quantile(cr,[0.01,0.05,0.25,0.50,0.75,0.95,0.99])
+
+    return {
+        "Price(PV)":res["price"],
+        "MC stderr":res["stderr"],
+        "Prob autocall":res["prob_called"],
+        "Avg call time (y)":res["avg_call_time"],
+        "Median return":float(np.median(cr)),
+        "P5 return":float(q[1]),
+        "P1 return":float(q[0]),
+        "Worst payoff":float(payoff.min()),
+        "Prob loss":float((cr<0).mean())
+    }
+
+
+def scenario_grid(base_params,spot_shocks=(-0.2,-0.1,0.0,0.1,0.2),vol_shocks=(-0.05,0.0,0.05)):
+    rows=[]
+    for ds in spot_shocks:
+        for dv in vol_shocks:
+            p=base_params.copy()
+            p["spot"]=base_params["spot"]*(1+ds)
+            p["sigma"]=max(0.0001,base_params["sigma"]+dv)
+            p["seed"]=base_params.get("seed",7)
+
+            res=run_pricing(p)
+            rows.append(dict(
+                spot_shock=ds,vol_shock=dv,spot=p["spot"],sigma=p["sigma"],
+                price=res["price"],prob_autocall=res["prob_called"],
+                prob_loss=float((res["client_return"]<0).mean()),
+                median_return=float(np.median(res["client_return"])),
+                p5_return=float(np.quantile(res["client_return"],0.05))
+            ))
+
+    return pd.DataFrame(rows).sort_values(["spot_shock","vol_shock"]).reset_index(drop=True)
+
+
+def plots_sales(res,params):
+    cr=res["client_return"]; called_at=res["called_at"]; paths=res["paths_sample"]
+    T=params["T"]; n_obs=res["n_obs"]; spot=params["spot"]; Sref=params["Sref"]
+
+    plt.figure(); plt.hist(cr,bins=60)
+    plt.title("Client return distribution")
+    plt.xlabel("return"); plt.ylabel("freq"); plt.show()
+
+    mask=called_at!=-1
+    if mask.any():
+        call_t=(called_at[mask]/n_obs)*T
+        plt.figure(); plt.hist(call_t,bins=25)
+        plt.title("Autocall time distribution")
+        plt.xlabel("years"); plt.ylabel("freq"); plt.show()
+
+    plt.figure()
+    grid_t=np.linspace(0,T,paths.shape[1])
+    for i in range(min(30,paths.shape[0])):
+        plt.plot(grid_t,paths[i],alpha=0.35)
+    plt.axhline(Sref,linestyle=":"); plt.axhline(spot,linestyle="--")
+    plt.title("Simulated paths (sample)")
+    plt.xlabel("time (years)"); plt.ylabel("S"); plt.show()
+
+
+if __name__=="__main__":
+    base=dict(
+        spot=100.0,Sref=100.0,r=0.02,sigma=0.25,
+        T=5.0,obs_per_year=12,
+        coupon_rate=0.01,coupon_barrier=0.6,
+        autocall_barrier=1.0,protection_barrier=0.6,
+        notional=100.0,n_paths=50000,seed=7
+    )
+
+    res=run_pricing(base)
+    print(pd.Series(client_metrics(res)))
+
+    print("\nScenario grid (spot / vol shocks):")
+    print(scenario_grid(base))
+
+    plots_sales(res,base)
