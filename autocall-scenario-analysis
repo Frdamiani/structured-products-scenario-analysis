@@ -1,159 +1,436 @@
-# structured_scenarios_tool.py
+# scenario_analysis_ui.py
+
+# Interface tkinter – analyse de scénarios Phoenix autocall
+
+# github.com/Frdamiani/structured-products-scenario-analysis
 
 import math
+import tkinter as tk
+from tkinter import ttk, messagebox
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use(“TkAgg”)
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+# ── moteur de calcul ──────────────────────────────────────────────────────────
 
-def simulate_gbm_paths(S0,r,sigma,T,n_steps,n_paths,seed=42):
-    rng=np.random.default_rng(seed); dt=T/n_steps
-    Z=rng.standard_normal((n_paths,n_steps))
-    drift=(r-0.5*sigma*sigma)*dt; vol=sigma*math.sqrt(dt)
+def simulate_gbm_paths(S0, r, sigma, T, n_steps, n_paths, seed=7):
+rng = np.random.default_rng(seed)
+dt = T / n_steps
+Z = rng.standard_normal((n_paths, n_steps))
+drift = (r - 0.5 * sigma * sigma) * dt
+vol = sigma * math.sqrt(dt)
+logS = np.empty((n_paths, n_steps + 1))
+logS[:, 0] = math.log(S0)
+logS[:, 1:] = logS[:, 0:1] + np.cumsum(drift + vol * Z, axis=1)
+return np.exp(logS)
 
-    logS=np.empty((n_paths,n_steps+1)); logS[:,0]=math.log(S0)
-    for k in range(n_steps):
-        logS[:,k+1]=logS[:,k]+drift+vol*Z[:,k]
-    return np.exp(logS)
+def phoenix_cashflows(paths, Sref, r, T, obs_per_year,
+coupon_rate, coupon_barrier, autocall_barrier,
+protection_barrier, notional=100.0):
+“”“Version vectorisée : boucle sur les dates d’observation, pas sur les paths.”””
+n_paths = paths.shape[0]
+n_obs = int(obs_per_year * T)
+t_obs = np.arange(1, n_obs + 1) / n_obs * T
+disc = np.exp(-r * t_obs)
 
+```
+call_lvl = autocall_barrier * Sref
+cpn_lvl  = coupon_barrier   * Sref
+prot_lvl = protection_barrier * Sref
 
-def phoenix_cashflows(paths,spot,Sref,r,T,obs_per_year,coupon_rate,coupon_barrier,
-                      autocall_barrier,protection_barrier,notional=100.0):
-    n_paths=paths.shape[0]; n_obs=int(obs_per_year*T)
-    disc=lambda t:math.exp(-r*t)
+S_obs = paths[:, 1:]           # (n_paths, n_obs)
 
-    call_lvl=autocall_barrier*Sref; cpn_lvl=coupon_barrier*Sref; prot_lvl=protection_barrier*Sref
+pv         = np.zeros(n_paths)
+payoff     = np.zeros(n_paths)
+called_at  = np.full(n_paths, -1, dtype=int)
+cum_cpn    = np.zeros(n_paths, dtype=int)
+active     = np.ones(n_paths,  dtype=bool)
 
-    pv=np.zeros(n_paths); payoff=np.zeros(n_paths)
-    called_at=np.full(n_paths,-1,dtype=int); n_coupons=np.zeros(n_paths,dtype=int)
+for k in range(n_obs):
+    t = t_obs[k]; d = disc[k]
 
-    for p in range(n_paths):
-        v=0.0; called=False
-        for k in range(1,n_obs+1):
-            t=(k/n_obs)*T; S=paths[p,k]
+    cpn_mask = active & (S_obs[:, k] >= cpn_lvl)
+    pv[cpn_mask]  += notional * coupon_rate * d
+    cum_cpn[cpn_mask] += 1
 
-            if S>=cpn_lvl:
-                v+=notional*coupon_rate*disc(t); n_coupons[p]+=1
+    call_mask = active & (S_obs[:, k] >= call_lvl)
+    pv[call_mask]       += notional * d
+    called_at[call_mask] = k + 1
+    payoff[call_mask]    = notional * (1 + coupon_rate * cum_cpn[call_mask])
+    active[call_mask]    = False
 
-            if S>=call_lvl:
-                v+=notional*disc(t); called_at[p]=k
-                payoff[p]=notional+notional*coupon_rate*n_coupons[p]
-                called=True; break
+ST = paths[active, -1]
+redemption = np.where(ST >= prot_lvl, notional, notional * ST / Sref)
+pv[active]     += redemption * math.exp(-r * T)
+payoff[active]  = redemption + notional * coupon_rate * cum_cpn[active]
 
-        if not called:
-            ST=paths[p,-1]
-            redemption=notional if ST>=prot_lvl else notional*(ST/Sref)
-            v+=redemption*disc(T)
-            payoff[p]=redemption+notional*coupon_rate*n_coupons[p]
-
-        pv[p]=v
-
-    return pv,payoff,called_at,n_coupons
-
+return pv, payoff, called_at, cum_cpn
+```
 
 def run_pricing(params):
-    spot=params["spot"]; Sref=params["Sref"]; r=params["r"]; sigma=params["sigma"]
-    T=params["T"]; obs_per_year=params["obs_per_year"]
-    n_paths=params["n_paths"]; seed=params.get("seed",7)
+S0    = params[“spot”];  Sref  = params[“Sref”]
+r     = params[“r”];     sigma = params[“sigma”]
+T     = params[“T”];     obs   = params[“obs_per_year”]
+n     = params[“n_paths”]; seed = params.get(“seed”, 7)
+n_obs = int(obs * T)
 
-    n_obs=int(obs_per_year*T)
-    paths=simulate_gbm_paths(spot,r,sigma,T,n_obs,n_paths,seed=seed)
+```
+paths = simulate_gbm_paths(S0, r, sigma, T, n_obs, n, seed)
+pv, payoff, called_at, n_coupons = phoenix_cashflows(
+    paths, Sref, r, T, obs,
+    params["coupon_rate"], params["coupon_barrier"],
+    params["autocall_barrier"], params["protection_barrier"],
+    params.get("notional", 100.0)
+)
 
-    pv,payoff,called_at,n_coupons=phoenix_cashflows(
-        paths,spot,Sref,r,T,obs_per_year,
-        params["coupon_rate"],params["coupon_barrier"],
-        params["autocall_barrier"],params["protection_barrier"],
-        params.get("notional",100.0)
-    )
+price       = float(pv.mean())
+stderr      = float(pv.std(ddof=1) / math.sqrt(n))
+prob_called = float((called_at != -1).mean())
+avg_call    = float(((called_at[called_at != -1] / n_obs) * T).mean()) \
+              if prob_called > 0 else None
+cr          = (payoff / params.get("notional", 100.0)) - 1.0
 
-    price=float(pv.mean()); stderr=float(pv.std(ddof=1)/math.sqrt(n_paths))
-    prob_called=float((called_at!=-1).mean()); avg_call_time=None
-    if prob_called>0: avg_call_time=float(((called_at[called_at!=-1]/n_obs)*T).mean())
+return dict(price=price, stderr=stderr, prob_called=prob_called,
+            avg_call_time=avg_call, pv=pv, payoff=payoff,
+            client_return=cr, called_at=called_at,
+            paths_sample=paths[:300, :], n_obs=n_obs)
+```
 
-    notional=params.get("notional",100.0)
-    client_return=(payoff/notional)-1.0
+def run_scenario_grid(base, spot_shocks=(-0.20, -0.10, 0.0, 0.10, 0.20),
+vol_shocks=(-0.05, 0.0, 0.05)):
+rows = []
+for ds in spot_shocks:
+for dv in vol_shocks:
+p = base.copy()
+p[“spot”]  = base[“spot”]  * (1 + ds)
+p[“sigma”] = max(1e-4, base[“sigma”] + dv)
+res = run_pricing(p)
+cr  = res[“client_return”]
+rows.append(dict(
+spot_shock=ds, vol_shock=dv,
+price=res[“price”],
+prob_autocall=res[“prob_called”],
+prob_loss=float((cr < 0).mean()),
+median_return=float(np.median(cr)),
+p5_return=float(np.quantile(cr, 0.05))
+))
+return pd.DataFrame(rows)
 
-    return dict(price=price,stderr=stderr,prob_called=prob_called,avg_call_time=avg_call_time,
-                pv=pv,payoff=payoff,client_return=client_return,
-                called_at=called_at,n_coupons=n_coupons,
-                paths_sample=paths[:800,:],n_obs=n_obs)
+# ── interface ─────────────────────────────────────────────────────────────────
 
+DARK  = “#1e1e2e”
+PANEL = “#313244”
+ACCENT = “#89b4fa”
+GREEN  = “#a6e3a1”
+RED    = “#f38ba8”
+YELLOW = “#f9e2af”
+FG     = “#cdd6f4”
+FONT_MONO = (“Consolas”, 10)
 
-def client_metrics(res):
-    cr=res["client_return"]; payoff=res["payoff"]
-    q=np.quantile(cr,[0.01,0.05,0.25,0.50,0.75,0.95,0.99])
+PARAMS_DEF = [
+(“Spot (S₀)”,            “spot”,               “100.0”),
+(“Référence (Sref)”,     “Sref”,               “100.0”),
+(“Volatilité σ”,         “sigma”,              “0.25”),
+(“Taux sans risque r”,   “r”,                  “0.02”),
+(“Maturité (ans)”,       “T”,                  “5.0”),
+(“Observations / an”,    “obs_per_year”,       “12”),
+(“Taux de coupon”,       “coupon_rate”,        “0.01”),
+(“Barrière coupon”,      “coupon_barrier”,     “0.60”),
+(“Barrière rappel”,      “autocall_barrier”,   “1.00”),
+(“Barrière protection”,  “protection_barrier”, “0.60”),
+(“Nominale”,             “notional”,           “100.0”),
+(“Nb simulations”,       “n_paths”,            “15000”),
+]
 
-    return {
-        "Price(PV)":res["price"],
-        "MC stderr":res["stderr"],
-        "Prob autocall":res["prob_called"],
-        "Avg call time (y)":res["avg_call_time"],
-        "Median return":float(np.median(cr)),
-        "P5 return":float(q[1]),
-        "P1 return":float(q[0]),
-        "Worst payoff":float(payoff.min()),
-        "Prob loss":float((cr<0).mean())
+METRICS_DEF = [
+(“Prix (PV)”,              “price”,        “{:.4f}”),
+(“MC stderr”,              “stderr”,       “{:.4f}”),
+(“Prob. rappel anticipé”,  “prob_called”,  “{:.1%}”),
+(“Temps moy. rappel”,      “avg_call_time”,”{:.2f} ans”),
+(“Rendement médian”,       “median_ret”,   “{:.2%}”),
+(“Rendement P5”,           “p5_ret”,       “{:.2%}”),
+(“Prob. perte capital”,    “prob_loss”,    “{:.1%}”),
+]
+
+class App(tk.Tk):
+def **init**(self):
+super().**init**()
+self.title(“Phoenix Autocall — Scenario Analysis”)
+self.configure(bg=DARK)
+self.minsize(960, 580)
+self._style()
+self._build()
+
+```
+# ── style ─────────────────────────────────────────────────────────────────
+
+def _style(self):
+    s = ttk.Style(self)
+    s.theme_use("clam")
+    s.configure(".",           background=DARK, foreground=FG, font=("Segoe UI", 9))
+    s.configure("TFrame",      background=DARK)
+    s.configure("TLabel",      background=DARK, foreground=FG)
+    s.configure("TEntry",      fieldbackground=PANEL, foreground=FG,
+                insertcolor=FG, borderwidth=0)
+    s.configure("TButton",     background=PANEL, foreground=FG, relief="flat",
+                padding=5, focusthickness=0)
+    s.map("TButton",           background=[("active", ACCENT)],
+                               foreground=[("active", DARK)])
+    s.configure("TLabelframe", background=DARK, foreground=ACCENT,
+                bordercolor=PANEL)
+    s.configure("TLabelframe.Label", background=DARK, foreground=ACCENT,
+                font=("Segoe UI", 9, "bold"))
+    s.configure("TNotebook",   background=DARK, borderwidth=0)
+    s.configure("TNotebook.Tab", background=PANEL, foreground=FG, padding=(10, 4))
+    s.map("TNotebook.Tab",     background=[("selected", ACCENT)],
+                               foreground=[("selected", DARK)])
+    s.configure("TSeparator",  background=PANEL)
+
+# ── layout ────────────────────────────────────────────────────────────────
+
+def _build(self):
+    # colonne gauche
+    left = ttk.Frame(self, padding=(12, 12, 6, 12))
+    left.grid(row=0, column=0, sticky="ns")
+
+    ttk.Label(left, text="Paramètres",
+              font=("Segoe UI", 10, "bold"), foreground=ACCENT).grid(
+        row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    self.entries = {}
+    for i, (lbl, key, val) in enumerate(PARAMS_DEF, start=1):
+        ttk.Label(left, text=lbl, anchor="w").grid(
+            row=i, column=0, sticky="w", pady=2)
+        e = ttk.Entry(left, width=10, justify="right")
+        e.insert(0, val)
+        e.grid(row=i, column=1, sticky="e", padx=(8, 0), pady=2)
+        self.entries[key] = e
+
+    ttk.Separator(left, orient="horizontal").grid(
+        row=len(PARAMS_DEF)+1, columnspan=2, sticky="ew", pady=10)
+
+    btn_run = ttk.Button(left, text="▶  Lancer", command=self._run)
+    btn_run.grid(row=len(PARAMS_DEF)+2, columnspan=2, sticky="ew", pady=2)
+
+    btn_grid = ttk.Button(left, text="⊞  Grille de scénarios", command=self._run_grid)
+    btn_grid.grid(row=len(PARAMS_DEF)+3, columnspan=2, sticky="ew", pady=2)
+
+    self.lbl_status = ttk.Label(left, text="", foreground="gray",
+                                font=("Segoe UI", 8))
+    self.lbl_status.grid(row=len(PARAMS_DEF)+4, columnspan=2, pady=(6, 0))
+
+    # colonne droite
+    right = ttk.Frame(self, padding=(6, 12, 12, 12))
+    right.grid(row=0, column=1, sticky="nsew")
+    self.columnconfigure(1, weight=1)
+    self.rowconfigure(0, weight=1)
+    right.rowconfigure(1, weight=1)
+    right.columnconfigure(0, weight=1)
+
+    # bloc métriques
+    frm_metrics = ttk.LabelFrame(right, text="Résultats", padding=(10, 6))
+    frm_metrics.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+    self.metric_vars = {}
+    for i, (lbl, key, fmt) in enumerate(METRICS_DEF):
+        ttk.Label(frm_metrics, text=lbl, width=26, anchor="w").grid(
+            row=i, column=0, sticky="w", pady=1)
+        var = tk.StringVar(value="—")
+        ttk.Label(frm_metrics, textvariable=var, width=14, anchor="e",
+                  font=FONT_MONO, foreground=ACCENT).grid(
+            row=i, column=1, sticky="e", padx=(12, 0), pady=1)
+        self.metric_vars[key] = (var, fmt)
+
+    # onglets graphiques
+    nb = ttk.Notebook(right)
+    nb.grid(row=1, column=0, sticky="nsew")
+
+    self.tab_distrib = ttk.Frame(nb)
+    self.tab_paths   = ttk.Frame(nb)
+    nb.add(self.tab_distrib, text="  Distribution  ")
+    nb.add(self.tab_paths,   text="  Trajectoires  ")
+
+# ── actions ───────────────────────────────────────────────────────────────
+
+def _read_params(self):
+    p = {}
+    for key, e in self.entries.items():
+        raw = e.get().strip().replace(",", ".")
+        p[key] = int(float(raw)) if key in ("n_paths", "obs_per_year") else float(raw)
+    p["seed"] = 7
+    return p
+
+def _set_status(self, msg, color="gray"):
+    self.lbl_status.config(text=msg, foreground=color)
+    self.update_idletasks()
+
+def _run(self):
+    try:
+        params = self._read_params()
+    except ValueError:
+        messagebox.showerror("Erreur", "Paramètre invalide.")
+        return
+    self._set_status("Calcul en cours…")
+    try:
+        res = run_pricing(params)
+    except Exception as ex:
+        messagebox.showerror("Erreur calcul", str(ex))
+        self._set_status("Erreur", RED)
+        return
+    self._update_metrics(res)
+    self._draw_distrib(res)
+    self._draw_paths(res, params)
+    self._set_status("✓ Terminé", GREEN)
+
+def _run_grid(self):
+    try:
+        params = self._read_params()
+    except ValueError:
+        messagebox.showerror("Erreur", "Paramètre invalide.")
+        return
+    self._set_status("Grille en cours… (quelques secondes)")
+    try:
+        df = run_scenario_grid(params)
+    except Exception as ex:
+        messagebox.showerror("Erreur", str(ex))
+        self._set_status("Erreur", RED)
+        return
+    self._show_grid(df)
+    self._set_status("✓ Grille calculée", GREEN)
+
+# ── métriques ─────────────────────────────────────────────────────────────
+
+def _update_metrics(self, res):
+    cr = res["client_return"]
+    vals = {
+        "price":        res["price"],
+        "stderr":       res["stderr"],
+        "prob_called":  res["prob_called"],
+        "avg_call_time":res["avg_call_time"] or 0.0,
+        "median_ret":   float(np.median(cr)),
+        "p5_ret":       float(np.quantile(cr, 0.05)),
+        "prob_loss":    float((cr < 0).mean()),
     }
+    for key, (var, fmt) in self.metric_vars.items():
+        var.set(fmt.format(vals[key]))
 
+# ── graphiques ────────────────────────────────────────────────────────────
 
-def scenario_grid(base_params,spot_shocks=(-0.2,-0.1,0.0,0.1,0.2),vol_shocks=(-0.05,0.0,0.05)):
-    rows=[]
-    for ds in spot_shocks:
-        for dv in vol_shocks:
-            p=base_params.copy()
-            p["spot"]=base_params["spot"]*(1+ds)
-            p["sigma"]=max(0.0001,base_params["sigma"]+dv)
-            p["seed"]=base_params.get("seed",7)
+def _embed(self, fig, parent):
+    for w in parent.winfo_children():
+        w.destroy()
+    canvas = FigureCanvasTkAgg(fig, master=parent)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+    plt.close(fig)
 
-            res=run_pricing(p)
-            rows.append(dict(
-                spot_shock=ds,vol_shock=dv,spot=p["spot"],sigma=p["sigma"],
-                price=res["price"],prob_autocall=res["prob_called"],
-                prob_loss=float((res["client_return"]<0).mean()),
-                median_return=float(np.median(res["client_return"])),
-                p5_return=float(np.quantile(res["client_return"],0.05))
-            ))
+def _draw_distrib(self, res):
+    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96,
+                           facecolor=DARK)
+    ax.set_facecolor(PANEL)
+    cr = res["client_return"] * 100
+    ax.hist(cr, bins=60, color=ACCENT, edgecolor="none", alpha=0.85)
+    ax.axvline(0, color=RED, linewidth=1.3, linestyle="--", label="seuil perte (0%)")
+    med = float(np.median(cr))
+    ax.axvline(med, color=GREEN, linewidth=1.1, linestyle=":", label=f"médiane ({med:.1f}%)")
+    ax.set_xlabel("Rendement client (%)", color=FG)
+    ax.set_ylabel("Fréquence", color=FG)
+    ax.set_title("Distribution des rendements simulés", color=FG)
+    ax.tick_params(colors=FG)
+    for sp in ax.spines.values():
+        sp.set_edgecolor(PANEL)
+    ax.legend(fontsize=8, facecolor=PANEL, labelcolor=FG)
+    fig.tight_layout(pad=1.2)
+    self._embed(fig, self.tab_distrib)
 
-    return pd.DataFrame(rows).sort_values(["spot_shock","vol_shock"]).reset_index(drop=True)
+def _draw_paths(self, res, params):
+    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96,
+                           facecolor=DARK)
+    ax.set_facecolor(PANEL)
+    paths = res["paths_sample"]
+    T = params["T"]
+    t_grid = np.linspace(0, T, paths.shape[1])
+    Sref = params["Sref"]
 
+    for i in range(min(50, paths.shape[0])):
+        ax.plot(t_grid, paths[i], alpha=0.22, linewidth=0.6, color=ACCENT)
 
-def plots_sales(res,params):
-    cr=res["client_return"]; called_at=res["called_at"]; paths=res["paths_sample"]
-    T=params["T"]; n_obs=res["n_obs"]; spot=params["spot"]; Sref=params["Sref"]
+    ax.axhline(Sref * params["autocall_barrier"],   color=GREEN,  linewidth=1.1,
+               linestyle="--", label=f"rappel ({params['autocall_barrier']:.0%})")
+    ax.axhline(Sref * params["coupon_barrier"],     color=YELLOW, linewidth=1.0,
+               linestyle=":",  label=f"coupon ({params['coupon_barrier']:.0%})")
+    ax.axhline(Sref * params["protection_barrier"], color=RED,    linewidth=1.0,
+               linestyle="-.", label=f"protection ({params['protection_barrier']:.0%})")
+    ax.axhline(Sref, color="white", linewidth=0.7, alpha=0.4, linestyle="-")
 
-    plt.figure(); plt.hist(cr,bins=60)
-    plt.title("Client return distribution")
-    plt.xlabel("return"); plt.ylabel("freq"); plt.show()
+    ax.set_xlabel("Temps (ans)", color=FG)
+    ax.set_ylabel("Niveau sous-jacent", color=FG)
+    ax.set_title("Trajectoires simulées — échantillon", color=FG)
+    ax.tick_params(colors=FG)
+    for sp in ax.spines.values():
+        sp.set_edgecolor(PANEL)
+    ax.legend(fontsize=7, facecolor=PANEL, labelcolor=FG)
+    fig.tight_layout(pad=1.2)
+    self._embed(fig, self.tab_paths)
 
-    mask=called_at!=-1
-    if mask.any():
-        call_t=(called_at[mask]/n_obs)*T
-        plt.figure(); plt.hist(call_t,bins=25)
-        plt.title("Autocall time distribution")
-        plt.xlabel("years"); plt.ylabel("freq"); plt.show()
+# ── fenêtre grille ────────────────────────────────────────────────────────
 
-    plt.figure()
-    grid_t=np.linspace(0,T,paths.shape[1])
-    for i in range(min(30,paths.shape[0])):
-        plt.plot(grid_t,paths[i],alpha=0.35)
-    plt.axhline(Sref,linestyle=":"); plt.axhline(spot,linestyle="--")
-    plt.title("Simulated paths (sample)")
-    plt.xlabel("time (years)"); plt.ylabel("S"); plt.show()
+def _show_grid(self, df):
+    win = tk.Toplevel(self)
+    win.title("Grille de scénarios — spot × volatilité")
+    win.configure(bg=DARK)
+    win.minsize(900, 380)
 
+    spot_sh = sorted(df["spot_shock"].unique())
+    vol_sh  = sorted(df["vol_shock"].unique())
 
-if __name__=="__main__":
-    base=dict(
-        spot=100.0,Sref=100.0,r=0.02,sigma=0.25,
-        T=5.0,obs_per_year=12,
-        coupon_rate=0.01,coupon_barrier=0.6,
-        autocall_barrier=1.0,protection_barrier=0.6,
-        notional=100.0,n_paths=50000,seed=7
-    )
+    cols = [
+        ("price",         "Prix (PV)",         "{:.2f}", "RdYlGn"),
+        ("prob_autocall", "Prob. rappel",       "{:.0%}", "RdYlGn"),
+        ("median_return", "Rendement médian",   "{:.1%}", "RdYlGn"),
+    ]
 
-    res=run_pricing(base)
-    print(pd.Series(client_metrics(res)))
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), dpi=96,
+                             facecolor=DARK)
+    fig.suptitle("Grille de scénarios  (lignes = choc vol σ, colonnes = choc spot)",
+                 color=FG, fontsize=9)
 
-    print("\nScenario grid (spot / vol shocks):")
-    print(scenario_grid(base))
+    for ax, (col, title, fmt, cmap) in zip(axes, cols):
+        mat = df.pivot(index="vol_shock", columns="spot_shock", values=col)
+        mat = mat.reindex(index=vol_sh, columns=spot_sh).values
 
-    plots_sales(res,base)
+        im = ax.imshow(mat, cmap=cmap, aspect="auto")
+        ax.set_xticks(range(len(spot_sh)))
+        ax.set_xticklabels([f"{s:+.0%}" for s in spot_sh], fontsize=8, color=FG)
+        ax.set_yticks(range(len(vol_sh)))
+        ax.set_yticklabels([f"{v:+.2f}" for v in vol_sh], fontsize=8, color=FG)
+        ax.set_xlabel("Choc spot", fontsize=8, color=FG)
+        ax.set_ylabel("Choc vol (Δσ)", fontsize=8, color=FG)
+        ax.set_title(title, fontsize=9, color=FG, pad=6)
+        ax.tick_params(colors=FG, length=0)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+
+        for r in range(mat.shape[0]):
+            for c in range(mat.shape[1]):
+                ax.text(c, r, fmt.format(mat[r, c]),
+                        ha="center", va="center", fontsize=8,
+                        color="black", fontweight="bold")
+        cb = fig.colorbar(im, ax=ax, shrink=0.75, pad=0.02)
+        cb.ax.tick_params(colors=FG, labelsize=7)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    canvas = FigureCanvasTkAgg(fig, master=win)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
+    plt.close(fig)
+```
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+if **name** == “**main**”:
+app = App()
+app.mainloop()
