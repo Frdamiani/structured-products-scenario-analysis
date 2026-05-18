@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
+
 # scenario_analysis_ui.py
 
-# Interface tkinter – analyse de scénarios Phoenix autocall
+# Interface tkinter - analyse de scenarios Phoenix autocall
 
 # github.com/Frdamiani/structured-products-scenario-analysis
 
@@ -14,7 +16,7 @@ matplotlib.use(“TkAgg”)
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-# ── moteur de calcul ──────────────────────────────────────────────────────────
+# — moteur de calcul ––––––––––––––––––––––––––––
 
 def simulate_gbm_paths(S0, r, sigma, T, n_steps, n_paths, seed=7):
 rng = np.random.default_rng(seed)
@@ -30,7 +32,6 @@ return np.exp(logS)
 def phoenix_cashflows(paths, Sref, r, T, obs_per_year,
 coupon_rate, coupon_barrier, autocall_barrier,
 protection_barrier, notional=100.0):
-“”“Version vectorisée : boucle sur les dates d’observation, pas sur les paths.”””
 n_paths = paths.shape[0]
 n_obs = int(obs_per_year * T)
 t_obs = np.arange(1, n_obs + 1) / n_obs * T
@@ -41,19 +42,20 @@ call_lvl = autocall_barrier * Sref
 cpn_lvl  = coupon_barrier   * Sref
 prot_lvl = protection_barrier * Sref
 
-S_obs = paths[:, 1:]           # (n_paths, n_obs)
+S_obs = paths[:, 1:]
 
-pv         = np.zeros(n_paths)
-payoff     = np.zeros(n_paths)
-called_at  = np.full(n_paths, -1, dtype=int)
-cum_cpn    = np.zeros(n_paths, dtype=int)
-active     = np.ones(n_paths,  dtype=bool)
+pv        = np.zeros(n_paths)
+payoff    = np.zeros(n_paths)
+called_at = np.full(n_paths, -1, dtype=int)
+cum_cpn   = np.zeros(n_paths, dtype=int)
+active    = np.ones(n_paths, dtype=bool)
 
 for k in range(n_obs):
-    t = t_obs[k]; d = disc[k]
+    t = t_obs[k]
+    d = disc[k]
 
     cpn_mask = active & (S_obs[:, k] >= cpn_lvl)
-    pv[cpn_mask]  += notional * coupon_rate * d
+    pv[cpn_mask] += notional * coupon_rate * d
     cum_cpn[cpn_mask] += 1
 
     call_mask = active & (S_obs[:, k] >= call_lvl)
@@ -64,8 +66,8 @@ for k in range(n_obs):
 
 ST = paths[active, -1]
 redemption = np.where(ST >= prot_lvl, notional, notional * ST / Sref)
-pv[active]     += redemption * math.exp(-r * T)
-payoff[active]  = redemption + notional * coupon_rate * cum_cpn[active]
+pv[active]    += redemption * math.exp(-r * T)
+payoff[active] = redemption + notional * coupon_rate * cum_cpn[active]
 
 return pv, payoff, called_at, cum_cpn
 ```
@@ -74,11 +76,11 @@ def run_pricing(params):
 S0    = params[“spot”];  Sref  = params[“Sref”]
 r     = params[“r”];     sigma = params[“sigma”]
 T     = params[“T”];     obs   = params[“obs_per_year”]
-n     = params[“n_paths”]; seed = params.get(“seed”, 7)
+n     = params[“n_paths”]
 n_obs = int(obs * T)
 
 ```
-paths = simulate_gbm_paths(S0, r, sigma, T, n_obs, n, seed)
+paths = simulate_gbm_paths(S0, r, sigma, T, n_obs, n)
 pv, payoff, called_at, n_coupons = phoenix_cashflows(
     paths, Sref, r, T, obs,
     params["coupon_rate"], params["coupon_barrier"],
@@ -91,7 +93,7 @@ stderr      = float(pv.std(ddof=1) / math.sqrt(n))
 prob_called = float((called_at != -1).mean())
 avg_call    = float(((called_at[called_at != -1] / n_obs) * T).mean()) \
               if prob_called > 0 else None
-cr          = (payoff / params.get("notional", 100.0)) - 1.0
+cr = (payoff / params.get("notional", 100.0)) - 1.0
 
 return dict(price=price, stderr=stderr, prob_called=prob_called,
             avg_call_time=avg_call, pv=pv, payoff=payoff,
@@ -99,8 +101,9 @@ return dict(price=price, stderr=stderr, prob_called=prob_called,
             paths_sample=paths[:300, :], n_obs=n_obs)
 ```
 
-def run_scenario_grid(base, spot_shocks=(-0.20, -0.10, 0.0, 0.10, 0.20),
-vol_shocks=(-0.05, 0.0, 0.05)):
+def run_scenario_grid(base):
+spot_shocks = (-0.20, -0.10, 0.0, 0.10, 0.20)
+vol_shocks  = (-0.05, 0.0, 0.05)
 rows = []
 for ds in spot_shocks:
 for dv in vol_shocks:
@@ -119,86 +122,84 @@ p5_return=float(np.quantile(cr, 0.05))
 ))
 return pd.DataFrame(rows)
 
-# ── interface ─────────────────────────────────────────────────────────────────
+# — interface ––––––––––––––––––––––––––––––––
 
-DARK  = “#1e1e2e”
-PANEL = “#313244”
+DARK   = “#1e1e2e”
+PANEL  = “#313244”
 ACCENT = “#89b4fa”
 GREEN  = “#a6e3a1”
 RED    = “#f38ba8”
 YELLOW = “#f9e2af”
 FG     = “#cdd6f4”
-FONT_MONO = (“Consolas”, 10)
+MONO   = (“Consolas”, 10)
 
 PARAMS_DEF = [
-(“Spot (S₀)”,            “spot”,               “100.0”),
-(“Référence (Sref)”,     “Sref”,               “100.0”),
-(“Volatilité σ”,         “sigma”,              “0.25”),
-(“Taux sans risque r”,   “r”,                  “0.02”),
-(“Maturité (ans)”,       “T”,                  “5.0”),
-(“Observations / an”,    “obs_per_year”,       “12”),
+(“Spot (S0)”,            “spot”,               “100.0”),
+(“Reference (Sref)”,     “Sref”,               “100.0”),
+(“Volatilite (sigma)”,   “sigma”,              “0.25”),
+(“Taux sans risque (r)”, “r”,                  “0.02”),
+(“Maturite (ans)”,       “T”,                  “5.0”),
+(“Observations / an”,   “obs_per_year”,        “12”),
 (“Taux de coupon”,       “coupon_rate”,        “0.01”),
-(“Barrière coupon”,      “coupon_barrier”,     “0.60”),
-(“Barrière rappel”,      “autocall_barrier”,   “1.00”),
-(“Barrière protection”,  “protection_barrier”, “0.60”),
+(“Barriere coupon”,      “coupon_barrier”,     “0.60”),
+(“Barriere rappel”,      “autocall_barrier”,   “1.00”),
+(“Barriere protection”,  “protection_barrier”, “0.60”),
 (“Nominale”,             “notional”,           “100.0”),
 (“Nb simulations”,       “n_paths”,            “15000”),
 ]
 
 METRICS_DEF = [
-(“Prix (PV)”,              “price”,        “{:.4f}”),
-(“MC stderr”,              “stderr”,       “{:.4f}”),
-(“Prob. rappel anticipé”,  “prob_called”,  “{:.1%}”),
-(“Temps moy. rappel”,      “avg_call_time”,”{:.2f} ans”),
-(“Rendement médian”,       “median_ret”,   “{:.2%}”),
-(“Rendement P5”,           “p5_ret”,       “{:.2%}”),
-(“Prob. perte capital”,    “prob_loss”,    “{:.1%}”),
+(“Prix (PV)”,             “price”,        “{:.4f}”),
+(“MC stderr”,             “stderr”,       “{:.4f}”),
+(“Prob. rappel anticipe”, “prob_called”,  “{:.1%}”),
+(“Temps moy. rappel”,     “avg_call_time”,”{:.2f} ans”),
+(“Rendement median”,      “median_ret”,   “{:.2%}”),
+(“Rendement P5”,          “p5_ret”,       “{:.2%}”),
+(“Prob. perte capital”,   “prob_loss”,    “{:.1%}”),
 ]
 
 class App(tk.Tk):
 def **init**(self):
 super().**init**()
-self.title(“Phoenix Autocall — Scenario Analysis”)
+self.title(“Phoenix Autocall - Scenario Analysis”)
 self.configure(bg=DARK)
 self.minsize(960, 580)
 self._style()
 self._build()
 
 ```
-# ── style ─────────────────────────────────────────────────────────────────
-
 def _style(self):
     s = ttk.Style(self)
     s.theme_use("clam")
-    s.configure(".",           background=DARK, foreground=FG, font=("Segoe UI", 9))
-    s.configure("TFrame",      background=DARK)
-    s.configure("TLabel",      background=DARK, foreground=FG)
-    s.configure("TEntry",      fieldbackground=PANEL, foreground=FG,
+    s.configure(".",            background=DARK, foreground=FG,
+                font=("Segoe UI", 9))
+    s.configure("TFrame",       background=DARK)
+    s.configure("TLabel",       background=DARK, foreground=FG)
+    s.configure("TEntry",       fieldbackground=PANEL, foreground=FG,
                 insertcolor=FG, borderwidth=0)
-    s.configure("TButton",     background=PANEL, foreground=FG, relief="flat",
-                padding=5, focusthickness=0)
-    s.map("TButton",           background=[("active", ACCENT)],
-                               foreground=[("active", DARK)])
-    s.configure("TLabelframe", background=DARK, foreground=ACCENT,
+    s.configure("TButton",      background=PANEL, foreground=FG,
+                relief="flat", padding=5, focusthickness=0)
+    s.map("TButton",            background=[("active", ACCENT)],
+                                foreground=[("active", DARK)])
+    s.configure("TLabelframe",  background=DARK, foreground=ACCENT,
                 bordercolor=PANEL)
     s.configure("TLabelframe.Label", background=DARK, foreground=ACCENT,
                 font=("Segoe UI", 9, "bold"))
-    s.configure("TNotebook",   background=DARK, borderwidth=0)
-    s.configure("TNotebook.Tab", background=PANEL, foreground=FG, padding=(10, 4))
-    s.map("TNotebook.Tab",     background=[("selected", ACCENT)],
-                               foreground=[("selected", DARK)])
-    s.configure("TSeparator",  background=PANEL)
-
-# ── layout ────────────────────────────────────────────────────────────────
+    s.configure("TNotebook",    background=DARK, borderwidth=0)
+    s.configure("TNotebook.Tab", background=PANEL, foreground=FG,
+                padding=(10, 4))
+    s.map("TNotebook.Tab",      background=[("selected", ACCENT)],
+                                foreground=[("selected", DARK)])
+    s.configure("TSeparator",   background=PANEL)
 
 def _build(self):
-    # colonne gauche
     left = ttk.Frame(self, padding=(12, 12, 6, 12))
     left.grid(row=0, column=0, sticky="ns")
 
-    ttk.Label(left, text="Paramètres",
-              font=("Segoe UI", 10, "bold"), foreground=ACCENT).grid(
-        row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ttk.Label(left, text="Parametres",
+              font=("Segoe UI", 10, "bold"),
+              foreground=ACCENT).grid(row=0, column=0, columnspan=2,
+                                      sticky="w", pady=(0, 8))
 
     self.entries = {}
     for i, (lbl, key, val) in enumerate(PARAMS_DEF, start=1):
@@ -212,17 +213,19 @@ def _build(self):
     ttk.Separator(left, orient="horizontal").grid(
         row=len(PARAMS_DEF)+1, columnspan=2, sticky="ew", pady=10)
 
-    btn_run = ttk.Button(left, text="▶  Lancer", command=self._run)
-    btn_run.grid(row=len(PARAMS_DEF)+2, columnspan=2, sticky="ew", pady=2)
+    ttk.Button(left, text="Lancer",
+               command=self._run).grid(
+        row=len(PARAMS_DEF)+2, columnspan=2, sticky="ew", pady=2)
 
-    btn_grid = ttk.Button(left, text="⊞  Grille de scénarios", command=self._run_grid)
-    btn_grid.grid(row=len(PARAMS_DEF)+3, columnspan=2, sticky="ew", pady=2)
+    ttk.Button(left, text="Grille de scenarios",
+               command=self._run_grid).grid(
+        row=len(PARAMS_DEF)+3, columnspan=2, sticky="ew", pady=2)
 
-    self.lbl_status = ttk.Label(left, text="", foreground="gray",
+    self.lbl_status = ttk.Label(left, text="",
+                                foreground="gray",
                                 font=("Segoe UI", 8))
     self.lbl_status.grid(row=len(PARAMS_DEF)+4, columnspan=2, pady=(6, 0))
 
-    # colonne droite
     right = ttk.Frame(self, padding=(6, 12, 12, 12))
     right.grid(row=0, column=1, sticky="nsew")
     self.columnconfigure(1, weight=1)
@@ -230,40 +233,35 @@ def _build(self):
     right.rowconfigure(1, weight=1)
     right.columnconfigure(0, weight=1)
 
-    # bloc métriques
-    frm_metrics = ttk.LabelFrame(right, text="Résultats", padding=(10, 6))
-    frm_metrics.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    frm_m = ttk.LabelFrame(right, text="Resultats", padding=(10, 6))
+    frm_m.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
     self.metric_vars = {}
     for i, (lbl, key, fmt) in enumerate(METRICS_DEF):
-        ttk.Label(frm_metrics, text=lbl, width=26, anchor="w").grid(
+        ttk.Label(frm_m, text=lbl, width=26, anchor="w").grid(
             row=i, column=0, sticky="w", pady=1)
-        var = tk.StringVar(value="—")
-        ttk.Label(frm_metrics, textvariable=var, width=14, anchor="e",
-                  font=FONT_MONO, foreground=ACCENT).grid(
+        var = tk.StringVar(value="--")
+        ttk.Label(frm_m, textvariable=var, width=14, anchor="e",
+                  font=MONO, foreground=ACCENT).grid(
             row=i, column=1, sticky="e", padx=(12, 0), pady=1)
         self.metric_vars[key] = (var, fmt)
 
-    # onglets graphiques
     nb = ttk.Notebook(right)
     nb.grid(row=1, column=0, sticky="nsew")
-
     self.tab_distrib = ttk.Frame(nb)
     self.tab_paths   = ttk.Frame(nb)
     nb.add(self.tab_distrib, text="  Distribution  ")
     nb.add(self.tab_paths,   text="  Trajectoires  ")
 
-# ── actions ───────────────────────────────────────────────────────────────
-
 def _read_params(self):
     p = {}
     for key, e in self.entries.items():
         raw = e.get().strip().replace(",", ".")
-        p[key] = int(float(raw)) if key in ("n_paths", "obs_per_year") else float(raw)
-    p["seed"] = 7
+        p[key] = int(float(raw)) if key in ("n_paths", "obs_per_year") \
+                 else float(raw)
     return p
 
-def _set_status(self, msg, color="gray"):
+def _status(self, msg, color="gray"):
     self.lbl_status.config(text=msg, foreground=color)
     self.update_idletasks()
 
@@ -271,37 +269,35 @@ def _run(self):
     try:
         params = self._read_params()
     except ValueError:
-        messagebox.showerror("Erreur", "Paramètre invalide.")
+        messagebox.showerror("Erreur", "Parametre invalide.")
         return
-    self._set_status("Calcul en cours…")
+    self._status("Calcul en cours...")
     try:
         res = run_pricing(params)
     except Exception as ex:
         messagebox.showerror("Erreur calcul", str(ex))
-        self._set_status("Erreur", RED)
+        self._status("Erreur", RED)
         return
     self._update_metrics(res)
     self._draw_distrib(res)
     self._draw_paths(res, params)
-    self._set_status("✓ Terminé", GREEN)
+    self._status("Termine", GREEN)
 
 def _run_grid(self):
     try:
         params = self._read_params()
     except ValueError:
-        messagebox.showerror("Erreur", "Paramètre invalide.")
+        messagebox.showerror("Erreur", "Parametre invalide.")
         return
-    self._set_status("Grille en cours… (quelques secondes)")
+    self._status("Grille en cours...")
     try:
         df = run_scenario_grid(params)
     except Exception as ex:
         messagebox.showerror("Erreur", str(ex))
-        self._set_status("Erreur", RED)
+        self._status("Erreur", RED)
         return
     self._show_grid(df)
-    self._set_status("✓ Grille calculée", GREEN)
-
-# ── métriques ─────────────────────────────────────────────────────────────
+    self._status("Grille calculee", GREEN)
 
 def _update_metrics(self, res):
     cr = res["client_return"]
@@ -317,8 +313,6 @@ def _update_metrics(self, res):
     for key, (var, fmt) in self.metric_vars.items():
         var.set(fmt.format(vals[key]))
 
-# ── graphiques ────────────────────────────────────────────────────────────
-
 def _embed(self, fig, parent):
     for w in parent.winfo_children():
         w.destroy()
@@ -328,17 +322,18 @@ def _embed(self, fig, parent):
     plt.close(fig)
 
 def _draw_distrib(self, res):
-    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96,
-                           facecolor=DARK)
+    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96, facecolor=DARK)
     ax.set_facecolor(PANEL)
     cr = res["client_return"] * 100
     ax.hist(cr, bins=60, color=ACCENT, edgecolor="none", alpha=0.85)
-    ax.axvline(0, color=RED, linewidth=1.3, linestyle="--", label="seuil perte (0%)")
+    ax.axvline(0, color=RED, linewidth=1.3, linestyle="--",
+               label="seuil perte (0%)")
     med = float(np.median(cr))
-    ax.axvline(med, color=GREEN, linewidth=1.1, linestyle=":", label=f"médiane ({med:.1f}%)")
+    ax.axvline(med, color=GREEN, linewidth=1.1, linestyle=":",
+               label="mediane ({:.1f}%)".format(med))
     ax.set_xlabel("Rendement client (%)", color=FG)
-    ax.set_ylabel("Fréquence", color=FG)
-    ax.set_title("Distribution des rendements simulés", color=FG)
+    ax.set_ylabel("Frequence", color=FG)
+    ax.set_title("Distribution des rendements simules", color=FG)
     ax.tick_params(colors=FG)
     for sp in ax.spines.values():
         sp.set_edgecolor(PANEL)
@@ -347,28 +342,30 @@ def _draw_distrib(self, res):
     self._embed(fig, self.tab_distrib)
 
 def _draw_paths(self, res, params):
-    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96,
-                           facecolor=DARK)
+    fig, ax = plt.subplots(figsize=(6, 3.6), dpi=96, facecolor=DARK)
     ax.set_facecolor(PANEL)
-    paths = res["paths_sample"]
-    T = params["T"]
+    paths  = res["paths_sample"]
+    T      = params["T"]
+    Sref   = params["Sref"]
     t_grid = np.linspace(0, T, paths.shape[1])
-    Sref = params["Sref"]
 
     for i in range(min(50, paths.shape[0])):
         ax.plot(t_grid, paths[i], alpha=0.22, linewidth=0.6, color=ACCENT)
 
-    ax.axhline(Sref * params["autocall_barrier"],   color=GREEN,  linewidth=1.1,
-               linestyle="--", label=f"rappel ({params['autocall_barrier']:.0%})")
-    ax.axhline(Sref * params["coupon_barrier"],     color=YELLOW, linewidth=1.0,
-               linestyle=":",  label=f"coupon ({params['coupon_barrier']:.0%})")
-    ax.axhline(Sref * params["protection_barrier"], color=RED,    linewidth=1.0,
-               linestyle="-.", label=f"protection ({params['protection_barrier']:.0%})")
-    ax.axhline(Sref, color="white", linewidth=0.7, alpha=0.4, linestyle="-")
+    ax.axhline(Sref * params["autocall_barrier"],
+               color=GREEN,  linewidth=1.1, linestyle="--",
+               label="rappel ({:.0%})".format(params["autocall_barrier"]))
+    ax.axhline(Sref * params["coupon_barrier"],
+               color=YELLOW, linewidth=1.0, linestyle=":",
+               label="coupon ({:.0%})".format(params["coupon_barrier"]))
+    ax.axhline(Sref * params["protection_barrier"],
+               color=RED,    linewidth=1.0, linestyle="-.",
+               label="protection ({:.0%})".format(params["protection_barrier"]))
+    ax.axhline(Sref, color="white", linewidth=0.7, alpha=0.4)
 
     ax.set_xlabel("Temps (ans)", color=FG)
     ax.set_ylabel("Niveau sous-jacent", color=FG)
-    ax.set_title("Trajectoires simulées — échantillon", color=FG)
+    ax.set_title("Trajectoires simulees - echantillon", color=FG)
     ax.tick_params(colors=FG)
     for sp in ax.spines.values():
         sp.set_edgecolor(PANEL)
@@ -376,11 +373,9 @@ def _draw_paths(self, res, params):
     fig.tight_layout(pad=1.2)
     self._embed(fig, self.tab_paths)
 
-# ── fenêtre grille ────────────────────────────────────────────────────────
-
 def _show_grid(self, df):
     win = tk.Toplevel(self)
-    win.title("Grille de scénarios — spot × volatilité")
+    win.title("Grille de scenarios - spot x volatilite")
     win.configure(bg=DARK)
     win.minsize(900, 380)
 
@@ -388,27 +383,30 @@ def _show_grid(self, df):
     vol_sh  = sorted(df["vol_shock"].unique())
 
     cols = [
-        ("price",         "Prix (PV)",         "{:.2f}", "RdYlGn"),
-        ("prob_autocall", "Prob. rappel",       "{:.0%}", "RdYlGn"),
-        ("median_return", "Rendement médian",   "{:.1%}", "RdYlGn"),
+        ("price",         "Prix (PV)",       "{:.2f}", "RdYlGn"),
+        ("prob_autocall", "Prob. rappel",     "{:.0%}", "RdYlGn"),
+        ("median_return", "Rendement median", "{:.1%}", "RdYlGn"),
     ]
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), dpi=96,
                              facecolor=DARK)
-    fig.suptitle("Grille de scénarios  (lignes = choc vol σ, colonnes = choc spot)",
+    fig.suptitle("Grille de scenarios  (lignes = choc vol, colonnes = choc spot)",
                  color=FG, fontsize=9)
 
     for ax, (col, title, fmt, cmap) in zip(axes, cols):
-        mat = df.pivot(index="vol_shock", columns="spot_shock", values=col)
+        mat = df.pivot(index="vol_shock", columns="spot_shock",
+                       values=col)
         mat = mat.reindex(index=vol_sh, columns=spot_sh).values
 
         im = ax.imshow(mat, cmap=cmap, aspect="auto")
         ax.set_xticks(range(len(spot_sh)))
-        ax.set_xticklabels([f"{s:+.0%}" for s in spot_sh], fontsize=8, color=FG)
+        ax.set_xticklabels(["{:+.0%}".format(s) for s in spot_sh],
+                           fontsize=8, color=FG)
         ax.set_yticks(range(len(vol_sh)))
-        ax.set_yticklabels([f"{v:+.2f}" for v in vol_sh], fontsize=8, color=FG)
+        ax.set_yticklabels(["{:+.2f}".format(v) for v in vol_sh],
+                           fontsize=8, color=FG)
         ax.set_xlabel("Choc spot", fontsize=8, color=FG)
-        ax.set_ylabel("Choc vol (Δσ)", fontsize=8, color=FG)
+        ax.set_ylabel("Choc vol", fontsize=8, color=FG)
         ax.set_title(title, fontsize=9, color=FG, pad=6)
         ax.tick_params(colors=FG, length=0)
         for sp in ax.spines.values():
@@ -417,8 +415,8 @@ def _show_grid(self, df):
         for r in range(mat.shape[0]):
             for c in range(mat.shape[1]):
                 ax.text(c, r, fmt.format(mat[r, c]),
-                        ha="center", va="center", fontsize=8,
-                        color="black", fontweight="bold")
+                        ha="center", va="center",
+                        fontsize=8, color="black", fontweight="bold")
         cb = fig.colorbar(im, ax=ax, shrink=0.75, pad=0.02)
         cb.ax.tick_params(colors=FG, labelsize=7)
 
@@ -429,7 +427,7 @@ def _show_grid(self, df):
     plt.close(fig)
 ```
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# — main ––––––––––––––––––––––––––––––––––
 
 if **name** == “**main**”:
 app = App()
